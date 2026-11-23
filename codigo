@@ -1,0 +1,158 @@
+//@version=6
+indicator("AURORA v1.4 — Market Context Indicator", overlay=false)
+
+// =========================
+// PARAMETERS (LOCKED)
+// =========================
+L_phi   = input.int(50, "L_phi (Structure)", group="Parameters")
+L_sigma = input.int(30, "L_sigma (Volatility)", group="Parameters")
+L_slope = input.int(20, "L_s (Trend)", group="Parameters")
+
+// =========================
+// CORE SERIES
+// =========================
+ret = math.log(close / close[1])
+
+// =========================
+// PHI (Structure)
+// =========================
+ema_ret = ta.ema(ret, L_phi)
+abs_err = math.abs(ret - ema_ret)
+base    = ta.sma(math.abs(ret), L_phi)
+
+phi_raw = 1 - abs_err / math.max(base, 1e-10)
+phi     = math.min(1.0, math.max(0.0, phi_raw))
+
+// =========================
+// VOLATILITY / DELTA V
+// =========================
+vol      = ta.stdev(ret, L_sigma)
+deltaVol = math.abs(vol - vol[1])
+
+// =========================
+// Z-SCORE FUNCTION
+// =========================
+zscore(src, len) =>
+    mean = ta.sma(src, len)
+    sd   = ta.stdev(src, len)
+    (src - mean) / math.max(sd, 1e-10)
+
+// =========================
+// DELTA V (normalized)
+// =========================
+zDeltaV = zscore(deltaVol, L_sigma)
+
+// =========================
+// TRUE RANGE + SUM
+// =========================
+tr = math.max(
+     high - low,
+     math.max(math.abs(high - close[1]), math.abs(low - close[1]))
+)
+
+sumTR = math.sum(tr, L_sigma)
+
+// =========================
+// CHOP (market choppiness)
+// =========================
+max_range = ta.highest(high, L_sigma) - ta.lowest(low, L_sigma)
+
+chop = 100 * math.log10(sumTR / math.max(max_range, 1e-10)) / math.log10(L_sigma)
+
+// Edge case fix
+chop := na(chop) ? 50.0 : chop
+
+zChop = zscore(chop, L_sigma)
+
+// =========================
+// PSI (Structural Risk)
+// =========================
+psi_raw = 0.5 * zDeltaV + 0.5 * zChop
+psi     = 1 / (1 + math.exp(-psi_raw))
+
+// =========================
+// OMEGA (Market Operability)
+// =========================
+omega = phi * (1 - psi)
+
+// =========================
+// SLOPE (Trend Strength)
+// =========================
+price_ema = ta.ema(close, L_slope)
+slope     = price_ema - price_ema[1]
+zSlope    = zscore(slope, L_sigma)
+
+// =========================
+// REGIME CLASSIFICATION
+// =========================
+isTrend    = (zSlope > 1) and (zChop < -1)
+isRange    = zChop > 1
+isVolatile = zDeltaV > 1
+
+regime = isTrend ? 1 : isVolatile ? 2 : 0
+
+// =========================
+// COLORS
+// =========================
+omega_color =
+     omega > 0.8 ? color.lime :
+     omega > 0.5 ? color.yellow :
+     color.red
+
+phi_color = color.blue
+psi_color = color.orange
+
+// =========================
+// VISUAL OUTPUT
+// =========================
+
+// Background
+bgcolor(
+     isTrend ? color.new(color.green, 90) :
+     isRange ? color.new(color.gray, 90) :
+     isVolatile ? color.new(color.red, 90) :
+     na
+)
+
+// Plots
+plot(omega, title="Ω (Operability)", color=omega_color, linewidth=2)
+plot(phi,   title="φ (Structure)",   color=phi_color,   linewidth=1)
+plot(psi,   title="Ψ (Risk)",        color=psi_color,   linewidth=1)
+
+// Regime histogram
+plot(regime, title="Regime", color=color.white, style=plot.style_histogram)
+
+// Reference lines
+hline(0.8, "High Operability", color=color.green)
+hline(0.5, "Mid Zone",         color=color.yellow)
+hline(0.3, "Low Zone",         color=color.red)
+
+// =========================
+// TABLE OUTPUT
+// =========================
+var table infoTable = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    regimeStr =
+         isTrend ? "TREND" :
+         isRange ? "RANGE" :
+         isVolatile ? "VOLATILE" :
+         "NEUTRAL"
+
+    regimeColor =
+         isTrend ? color.green :
+         isRange ? color.gray :
+         isVolatile ? color.red :
+         color.white
+
+    table.cell(infoTable, 0, 0, "AURORA v1.4", text_color=color.white)
+    table.cell(infoTable, 1, 0, "Context", text_color=color.gray)
+
+    table.cell(infoTable, 0, 1, "Regime:", text_color=color.gray)
+    table.cell(infoTable, 1, 1, regimeStr, text_color=regimeColor)
+
+    table.cell(infoTable, 0, 2, "Ω:", text_color=color.gray)
+    table.cell(infoTable, 1, 2, str.tostring(omega, "#.##"), text_color=omega_color)
+
+    table.cell(infoTable, 0, 3, "φ:", text_color=color.gray)
+    table.cell(infoTable, 1, 3, str.tostring(phi, "#.##"), text_color=phi_color)
